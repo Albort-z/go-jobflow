@@ -10,8 +10,8 @@ import (
 	"go-jobflow/queue"
 )
 
-// Job 工作节点，若配置后续节点，则会自动传递给后续节点处理
-type Job struct {
+// Node 工作节点，若配置后续节点，则会自动传递给后续节点处理
+type Node struct {
 	name        string // 任务名称，在关闭时会将未完成的任务按该名称存储
 	bufferSize  int    // 缓冲大小，即排队队列的最大长度
 	concurrency int    // 并发数量
@@ -27,12 +27,12 @@ type Job struct {
 
 	f Func
 
-	nextJob *Job
-	errJob  *Job
+	nextNode *Node
+	errNode  *Node
 }
 
-func NewJob(name string, bufferSize int, concurrency int, f Func) *Job {
-	return &Job{
+func NewNode(name string, bufferSize int, concurrency int, f Func) *Node {
+	return &Node{
 		name:        name,
 		bufferSize:  bufferSize,
 		concurrency: concurrency,
@@ -42,7 +42,7 @@ func NewJob(name string, bufferSize int, concurrency int, f Func) *Job {
 	}
 }
 
-func (j *Job) AppendJobs(nextJobs ...*Job) (err error) {
+func (j *Node) AppendJobs(nextJobs ...*Node) (err error) {
 	curr := j
 	for _, nextJob := range nextJobs {
 		err = curr.appendJob(nextJob)
@@ -55,28 +55,28 @@ func (j *Job) AppendJobs(nextJobs ...*Job) (err error) {
 }
 
 // 在Job处理结果后添加后续处理Job, 判断类型
-func (j *Job) appendJob(nextJob *Job) error {
-	if reflect.TypeOf(j.f.OutputObject()) != reflect.TypeOf(nextJob.f.InputObject()) {
-		return errors.New(fmt.Sprintf("%s的输出类型和%s的输入类型不一致:%s!=%s", j.name, nextJob.name, reflect.TypeOf(j.f.OutputObject()).String(), reflect.TypeOf(nextJob.f.InputObject()).String()))
+func (j *Node) appendJob(nextNode *Node) error {
+	if reflect.TypeOf(j.f.OutputObject()) != reflect.TypeOf(nextNode.f.InputObject()) {
+		return errors.New(fmt.Sprintf("%s的输出类型和%s的输入类型不一致:%s!=%s", j.name, nextNode.name, reflect.TypeOf(j.f.OutputObject()).String(), reflect.TypeOf(nextNode.f.InputObject()).String()))
 	}
-	j.nextJob = nextJob
+	j.nextNode = nextNode
 	return nil
 }
 
-// SetErrJob 设置处理失败结果的Job
-func (j *Job) SetErrJob(errJob *Job) error {
-	if reflect.TypeOf(ErrOutput{}) != reflect.TypeOf(errJob.f.InputObject()) {
-		return errors.New(fmt.Sprintf("%s的输入类型不是ErrOutput", errJob.name))
+// SetErrNode 设置处理失败结果的Job
+func (j *Node) SetErrNode(errNode *Node) error {
+	if reflect.TypeOf(ErrOutput{}) != reflect.TypeOf(errNode.f.InputObject()) {
+		return errors.New(fmt.Sprintf("%s的输入类型不是ErrOutput", errNode.name))
 	}
-	j.errJob = errJob
-	if j.nextJob != nil {
-		_ = j.nextJob.SetErrJob(errJob)
+	j.errNode = errNode
+	if j.nextNode != nil {
+		_ = j.nextNode.SetErrNode(errNode)
 	}
 	return nil
 }
 
 // Start 加载并启动
-func (j *Job) Start() (err error) {
+func (j *Node) Start() (err error) {
 	if j.status == StartingStatus || j.status == StartedStatus {
 		return nil
 	}
@@ -88,17 +88,17 @@ func (j *Job) Start() (err error) {
 	j.status = StartingStatus
 
 	// 当有nextJob时，输出会传入到nextJob
-	if j.nextJob == nil {
+	if j.nextNode == nil {
 		// 指定输出通道
 		j.outputCh = make(chan TaskOutput)
 	} else {
-		err = j.nextJob.Start()
+		err = j.nextNode.Start()
 		if err != nil {
 			return err
 		}
 		defer func() {
 			if err != nil {
-				e := j.nextJob.Stop()
+				e := j.nextNode.Stop()
 				if e != nil {
 					println("关闭任务失败:", e.Error())
 				}
@@ -123,17 +123,17 @@ func (j *Job) Start() (err error) {
 }
 
 // Stop 停止并存储
-func (j *Job) Stop() (err error) {
+func (j *Node) Stop() (err error) {
 	if !j.statusMtx.TryLock() {
 		return TransitionsErr
 	}
 	defer j.statusMtx.Unlock()
 	j.status = StoppingStatus
 
-	if j.nextJob != nil {
+	if j.nextNode != nil {
 		defer func() {
 			if err == nil {
-				err = j.nextJob.Stop()
+				err = j.nextNode.Stop()
 			}
 		}()
 	}
@@ -153,7 +153,7 @@ func (j *Job) Stop() (err error) {
 }
 
 // Pause 暂停从输入中读取任务
-func (j *Job) Pause() error {
+func (j *Node) Pause() error {
 	if !j.statusMtx.TryLock() {
 		return TransitionsErr
 	}
@@ -163,7 +163,7 @@ func (j *Job) Pause() error {
 }
 
 // Resume 从暂停状态恢复到运行状态
-func (j *Job) Resume() error {
+func (j *Node) Resume() error {
 	if !j.statusMtx.TryLock() {
 		return TransitionsErr
 	}
@@ -173,34 +173,34 @@ func (j *Job) Resume() error {
 }
 
 // AddTask 添加要执行的任务到队列
-func (j *Job) AddTask(task Task) error {
+func (j *Node) AddTask(task Task) error {
 	if j.status == StartedStatus || j.status == StartingStatus {
 		return j.inputCh.Push(task.UUID, task.Input)
 	}
 	return IsStoppedErr
 }
 
-func (j *Job) CancelTask(uuid string) bool {
+func (j *Node) CancelTask(uuid string) bool {
 	return j.inputCh.Remove(uuid)
 }
 
-func (j *Job) GetResult() <-chan TaskOutput {
-	if j.nextJob != nil {
-		return j.nextJob.GetResult()
+func (j *Node) GetResult() <-chan TaskOutput {
+	if j.nextNode != nil {
+		return j.nextNode.GetResult()
 	}
 	return j.outputCh
 }
 
 // GetStatus 获取Job的状态，主要包含待处理id队列、正在处理的ids
-func (j *Job) GetStatus() *StatusInfo {
+func (j *Node) GetStatus() *StatusInfo {
 	var status = StatusInfo{
 		Name:        j.name,
 		Status:      statusNameMap[j.status],
 		CurrentTask: j.current,
 		PendingList: j.inputCh.List(),
 	}
-	if j.nextJob != nil {
-		status.NextStatus = j.nextJob.GetStatus()
+	if j.nextNode != nil {
+		status.NextStatus = j.nextNode.GetStatus()
 	}
 	return &status
 }
@@ -218,7 +218,7 @@ type StatusInfo struct {
 	NextStatus *StatusInfo `json:"next_status,omitempty"`
 }
 
-func (j *Job) run() {
+func (j *Node) run() {
 	var task Task
 	var err error
 	var outputs []any
@@ -233,8 +233,8 @@ func (j *Job) run() {
 
 		outputs, err = j.f.Work(task.UUID, task.Input)
 		if err != nil {
-			if j.errJob != nil {
-				err = j.errJob.AddTask(Task{
+			if j.errNode != nil {
+				err = j.errNode.AddTask(Task{
 					UUID: task.UUID,
 					Input: ErrOutput{
 						Outputs: outputs,
@@ -247,8 +247,8 @@ func (j *Job) run() {
 			}
 		}
 		for _, output := range outputs {
-			if j.nextJob != nil {
-				err = j.nextJob.AddTask(Task{
+			if j.nextNode != nil {
+				err = j.nextNode.AddTask(Task{
 					UUID:  task.UUID,
 					Input: output,
 				})

@@ -51,8 +51,8 @@ func (p *Exam2) Work(uuid string, input any) (output []any, err error) {
 }
 
 func TestExam(t *testing.T) {
-	f := NewJob("Exam1", 4, 1, &Exam1{})
-	err := f.AppendJobs(NewJob("Exam2", 3, 3, &Exam2{}))
+	f := NewNode("Exam1", 4, 1, &Exam1{})
+	err := f.AppendJobs(NewNode("Exam2", 3, 3, &Exam2{}))
 	if err != nil {
 		t.Error(err)
 		return
